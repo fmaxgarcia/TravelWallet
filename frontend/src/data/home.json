@@ -1,0 +1,137 @@
+{
+  "user": {
+    "name": "Ava Traveler",
+    "homeAirport": "SFO",
+    "membershipStatus": "Gold"
+  },
+  "stats": {
+    "upcomingTrips": 3,
+    "loyaltyAccounts": 7,
+    "passesStored": 2
+  },
+  "trips": [
+    {
+      "id": "TRIP-001",
+      "title": "NYC Strategy Sprint",
+      "startDate": "Apr 18, 2025",
+      "endDate": "Apr 22, 2025",
+      "status": "Confirmed",
+      "segments": [
+        {
+          "type": "Flight",
+          "provider": "Delta",
+          "code": "DL 231",
+          "from": "SFO",
+          "to": "JFK",
+          "depart": "Apr 18, 7:15 AM",
+          "arrive": "Apr 18, 3:40 PM"
+        }
+      ],
+      "hotel": {
+        "provider": "Marriott",
+        "name": "Marriott Marquis",
+        "checkIn": "Apr 18",
+        "checkOut": "Apr 22"
+      }
+    },
+    {
+      "id": "TRIP-002",
+      "title": "Chicago Investor Forum",
+      "startDate": "May 02, 2025",
+      "endDate": "May 04, 2025",
+      "status": "Ticketed",
+      "segments": [
+        {
+          "type": "Flight",
+          "provider": "United",
+          "code": "UA 104",
+          "from": "SFO",
+          "to": "ORD",
+          "depart": "May 02, 9:10 AM",
+          "arrive": "May 02, 3:05 PM"
+        }
+      ],
+      "hotel": {
+        "provider": "Hyatt",
+        "name": "Hyatt Regency Chicago",
+        "checkIn": "May 02",
+        "checkOut": "May 04"
+      }
+    },
+    {
+      "id": "TRIP-003",
+      "title": "Buenos Aires Recharge",
+      "startDate": "Jun 11, 2025",
+      "endDate": "Jun 21, 2025",
+      "status": "Draft",
+      "segments": [
+        {
+          "type": "Flight",
+          "provider": "Aerolineas Argentinas",
+          "code": "AR 1301",
+          "from": "MIA",
+          "to": "EZE",
+          "depart": "Jun 11, 11:30 PM",
+          "arrive": "Jun 12, 9:05 AM"
+        }
+      ],
+      "hotel": {
+        "provider": "Sheraton",
+        "name": "Sheraton Buenos Aires",
+        "checkIn": "Jun 12",
+        "checkOut": "Jun 21"
+      }
+    }
+  ],
+  "loyaltyAccounts": [
+    {
+      "provider": "Delta SkyMiles",
+      "memberId": "DL-402991",
+      "points": 28450,
+      "tier": "Gold",
+      "lastUpdated": "2h ago"
+    },
+    {
+      "provider": "American AAdvantage",
+      "memberId": "AA-128774",
+      "points": 19200,
+      "tier": "Platinum",
+      "lastUpdated": "Yesterday"
+    },
+    {
+      "provider": "United MileagePlus",
+      "memberId": "UA-553980",
+      "points": 36550,
+      "tier": "Premier Silver",
+      "lastUpdated": "3d ago"
+    },
+    {
+      "provider": "Marriott Bonvoy",
+      "memberId": "MB-77201",
+      "points": 45880,
+      "tier": "Gold Elite",
+      "lastUpdated": "5h ago"
+    }
+  ],
+  "passes": [
+    {
+      "id": "BP-1001",
+      "provider": "United",
+      "route": "SFO -> ORD",
+      "date": "May 02",
+      "status": "Ready"
+    },
+    {
+      "id": "BP-1002",
+      "provider": "Delta",
+      "route": "JFK -> SFO",
+      "date": "Apr 22",
+      "status": "Pending upload"
+    }
+  ],
+  "actions": [
+    "Add a boarding pass",
+    "Connect a new loyalty account",
+    "Forward a confirmation email"
+  ]
+}
