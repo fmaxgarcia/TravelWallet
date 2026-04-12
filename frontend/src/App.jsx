@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import homeData from "./data/home.json";
+import { apiBaseUrl } from "./lib/config";
 import { supabase } from "./lib/supabase";
 import "./App.css";
 
@@ -13,8 +14,17 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [session, setSession] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
+  const [hyattUsername, setHyattUsername] = useState("");
+  const [hyattPassword, setHyattPassword] = useState("");
+  const [hyattAccount, setHyattAccount] = useState(null);
+  const [hyattStatus, setHyattStatus] = useState("");
+  const [hyattError, setHyattError] = useState("");
+  const [hyattLoading, setHyattLoading] = useState(false);
+  const [hyattHasCredentials, setHyattHasCredentials] = useState(false);
+  const [activeHotelProvider, setActiveHotelProvider] = useState("hyatt");
   const supabaseReady = Boolean(supabase);
   const { user, stats, trips, loyaltyAccounts, passes, actions } = homeData;
+  const hotelProviders = [{ key: "hyatt", name: "World of Hyatt" }];
 
   useEffect(() => {
     if (!supabase) {
@@ -38,9 +48,76 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (session) {
+      void syncHyatt();
+    }
+  }, [session]);
+
   const resetAlerts = () => {
     setError("");
     setMessage("");
+  };
+
+  const syncHyatt = async () => {
+    setHyattError("");
+    setHyattStatus("");
+    setHyattLoading(true);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/providers/${activeHotelProvider}/sync`,
+        {
+          method: "POST"
+        }
+      );
+      if (response.status === 404) {
+        setHyattAccount(null);
+        setHyattHasCredentials(false);
+        setHyattError("Add your Hyatt credentials to enable sync.");
+        return;
+      }
+      if (!response.ok) {
+        throw new Error("Unable to sync Hyatt account yet.");
+      }
+      const data = await response.json();
+      setHyattAccount(data.account);
+      setHyattStatus("Synced just now");
+      setHyattHasCredentials(true);
+    } catch (syncError) {
+      setHyattAccount(null);
+      setHyattError(syncError.message);
+    } finally {
+      setHyattLoading(false);
+    }
+  };
+
+  const saveHyattCredentials = async (event) => {
+    event.preventDefault();
+    setHyattError("");
+    setHyattStatus("");
+    setHyattLoading(true);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/providers/${activeHotelProvider}/credentials`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: hyattUsername, password: hyattPassword })
+        }
+      );
+      if (!response.ok) {
+        throw new Error("Unable to save Hyatt credentials.");
+      }
+      setHyattPassword("");
+      setHyattHasCredentials(true);
+      await syncHyatt();
+    } catch (saveError) {
+      setHyattError(saveError.message);
+    } finally {
+      setHyattLoading(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -121,6 +198,24 @@ function App() {
     endDate: trip.endDate,
     status: trip.status
   }));
+  const showHyattSyncCard = hyattHasCredentials || hyattLoading || hyattAccount;
+  const hyattSyncState = !showHyattSyncCard
+    ? "hidden"
+    : hyattLoading
+      ? "syncing"
+      : hyattError
+        ? "failed"
+        : hyattAccount
+          ? "success"
+          : "idle";
+  const hyattStatusLabel =
+    hyattSyncState === "syncing"
+      ? "Syncing"
+      : hyattSyncState === "failed"
+        ? "Failed to sync"
+        : hyattSyncState === "success"
+          ? hyattStatus || "Synced"
+          : "Ready to sync";
   const renderLoyaltySection = (title, accounts) => (
     <section className="section">
       <div className="panel card">
@@ -415,7 +510,106 @@ function App() {
                       ))}
                     </div>
                   </section>
+                  <section className="section">
+                    <div className="section-header">
+                      <h3>Hotel connectors</h3>
+                      <span className="pill">Connector</span>
+                    </div>
+                    <div className="panel card">
+                      <label className="select">
+                        Provider
+                        <select
+                          onChange={(event) => setActiveHotelProvider(event.target.value)}
+                          value={activeHotelProvider}
+                        >
+                          {hotelProviders.map((provider) => (
+                            <option key={provider.key} value={provider.key}>
+                              {provider.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <form className="provider-form" onSubmit={saveHyattCredentials}>
+                        <label>
+                          Member ID or email
+                          <input
+                            autoComplete="username"
+                            onChange={(event) => setHyattUsername(event.target.value)}
+                            placeholder="name@email.com"
+                            required
+                            type="text"
+                            value={hyattUsername}
+                          />
+                        </label>
+                        <label>
+                          Password
+                          <input
+                            autoComplete="current-password"
+                            onChange={(event) => setHyattPassword(event.target.value)}
+                            placeholder="Your Hyatt password"
+                            required
+                            type="password"
+                            value={hyattPassword}
+                          />
+                        </label>
+                        <div className="form-row">
+                          <button className="primary" disabled={hyattLoading} type="submit">
+                            {hyattLoading ? "Saving..." : "Save and sync"}
+                          </button>
+                          <button
+                            className="secondary"
+                            disabled={hyattLoading}
+                            type="button"
+                            onClick={syncHyatt}
+                          >
+                            {hyattLoading ? "Syncing..." : "Sync now"}
+                          </button>
+                        </div>
+                        {hyattError ? <div className="notice error">{hyattError}</div> : null}
+                        {hyattStatus ? <div className="notice success">{hyattStatus}</div> : null}
+                      </form>
+                    </div>
+                  </section>
                   {renderLoyaltySection("Hotel loyalty accounts", hotelLoyaltyAccounts)}
+                  {hyattSyncState !== "hidden" ? (
+                    <section className="section">
+                      <div className="section-header">
+                        <h3>Synced loyalty account</h3>
+                        <span className={`pill ${hyattSyncState}`}>{hyattStatusLabel}</span>
+                      </div>
+                      <div className={`sync-card ${hyattSyncState}`}>
+                        <div className="sync-row">
+                          <div>
+                            <p className="segment-title">World of Hyatt</p>
+                            <p className="muted">
+                              {hyattSyncState === "failed"
+                                ? hyattError || "Unable to sync."
+                                : "Account data updates automatically after sync."}
+                            </p>
+                          </div>
+                          <div className="sync-indicator">
+                            {hyattSyncState === "syncing" ? (
+                              <span className="spinner" aria-hidden="true" />
+                            ) : null}
+                            <span>{hyattStatusLabel}</span>
+                          </div>
+                        </div>
+                        {hyattAccount ? (
+                          <div className="account-card">
+                            <div>
+                              <p className="segment-title">{hyattAccount.provider}</p>
+                              <p className="muted">Member {hyattAccount.member_id}</p>
+                            </div>
+                            <div className="list-metric">
+                              <span>{hyattAccount.points} pts</span>
+                              <span className="muted">{hyattAccount.tier}</span>
+                              <span className="muted">{hyattAccount.last_updated}</span>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </section>
+                  ) : null}
                 </>
               ) : null}
 

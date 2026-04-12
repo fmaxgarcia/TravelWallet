@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 .uv-cache/
+backend/data/credentials.json
 
 # Node
 node_modules/

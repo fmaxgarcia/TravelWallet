@@ -65,3 +65,4 @@ PRs should include a summary, tests run, and screenshots for UI changes.
 
 ## Agent Instructions
 - When code changes are made, provide a per-file summary of what changed and why; do not include full diffs.
+- Update `docs/session-summary.md` every 10 interactions to keep project status current.
