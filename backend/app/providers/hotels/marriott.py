@@ -16,39 +16,38 @@ from app.providers.playwright_browser import (
     wait_first_visible_locator,
 )
 from app.providers.storage import (
+    get_provider_status,
     get_session_profile_dir,
     mark_session_connected,
     mark_session_reconnect_required,
-    save_session_state,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class HyattConnector:
-    provider_key = "hyatt"
-    provider_name = "World of Hyatt"
-    login_url = "https://www.hyatt.com/en-US/member/sign-in/traditional?returnUrl=https%3A%2F%2Fwww.hyatt.com"
-
+class MarriottConnector:
+    provider_key = "marriott"
+    provider_name = "Marriott Bonvoy"
+    login_url = "https://www.marriott.com/sign-in.mi"
     account_urls = (
-        "https://www.hyatt.com/profile/en-US/account-overview",
-        "https://www.hyatt.com/loyalty/en-US",
+        "https://www.marriott.com/loyalty/myAccount/default.mi",
+        "https://www.marriott.com/",
     )
     interactive_timeout_seconds = 300
 
     def sync_account(self, credentials: Credentials) -> AccountSummary:
-        try:
-            return self._run_session_flow(
-                headless=True,
-                credentials=credentials,
-                initial_url=self.account_urls[0],
-                interactive=False,
+        status = get_provider_status(self.provider_key)
+        if not status["has_session"]:
+            raise InteractiveLoginRequired(
+                "No saved Marriott session is available. Click Sync to sign in."
             )
-        except InteractiveLoginRequired:
-            logger.info("Hyatt: saved session needs login, opening browser for reconnect.")
-        except Exception:
-            logger.info("Hyatt: headless sync failed, opening browser for reconnect.")
-        return self.connect_account(credentials)
+
+        return self._run_session_flow(
+            headless=self._headless_enabled(),
+            credentials=credentials,
+            initial_url=self.account_urls[0],
+            interactive=False,
+        )
 
     def connect_account(self, credentials: Credentials | None = None) -> AccountSummary:
         return self._run_session_flow(
@@ -68,10 +67,10 @@ class HyattConnector:
     ) -> AccountSummary:
         debug = self._debug_enabled()
         debug_dir = Path(__file__).resolve().parents[3] / "data"
-        screenshot_path = debug_dir / "hyatt_debug.png"
-        html_path = debug_dir / "hyatt_debug.html"
-        meta_path = debug_dir / "hyatt_debug_meta.txt"
-        trace_path = debug_dir / "hyatt_trace.zip"
+        screenshot_path = debug_dir / "marriott_debug.png"
+        html_path = debug_dir / "marriott_debug.html"
+        meta_path = debug_dir / "marriott_debug_meta.txt"
+        trace_path = debug_dir / "marriott_trace.zip"
         session_dir = get_session_profile_dir(self.provider_key)
         session_dir.parent.mkdir(parents=True, exist_ok=True)
 
@@ -91,21 +90,21 @@ class HyattConnector:
                     context.tracing.start(screenshots=True, snapshots=True, sources=False)
 
                 page.bring_to_front()
-                logger.info("Hyatt: opening %s", initial_url)
+                logger.info("Marriott: opening %s", initial_url)
                 page.goto(initial_url, wait_until="domcontentloaded", timeout=45000)
                 if interactive:
                     page.wait_for_load_state("load", timeout=30000)
                     page.wait_for_timeout(2000)
-                    if self._looks_authenticated(page):
-                        summary = self._load_account_summary(page, credentials, post_login=True)
-                    else:
-                        if credentials is not None:
-                            self._fill_login_form(page, credentials)
-                        summary = self._wait_for_interactive_sign_in(page, credentials)
                 else:
                     page.wait_for_timeout(1500)
+
+                if interactive:
+                    if credentials is not None:
+                        self._fill_login_form(page, credentials)
+                    summary = self._wait_for_interactive_sign_in(page, credentials)
+                    page.wait_for_timeout(1500)
+                else:
                     summary = self._load_account_summary(page, credentials)
-                self._persist_session_state(context)
             except InteractiveLoginRequired as exc:
                 if debug:
                     self._capture_debug_artifacts(page, screenshot_path, html_path, meta_path)
@@ -114,26 +113,26 @@ class HyattConnector:
             except PlaywrightTimeoutError as exc:
                 if debug:
                     self._capture_debug_artifacts(page, screenshot_path, html_path, meta_path)
-                logger.exception("Hyatt: timed out while loading page.")
+                logger.exception("Marriott: timed out while loading page.")
                 message = (
                     (
-                        "Hyatt sign-in timed out. Complete the sign-in in the opened browser "
+                        "Marriott sign-in timed out. Complete the sign-in in the opened browser "
                         "and try again."
                     )
                     if interactive
-                    else "Hyatt session expired. Click Sync to reconnect."
+                    else "Marriott session expired. Click Sync to reconnect."
                 )
                 mark_session_reconnect_required(self.provider_key, message)
                 raise InteractiveLoginRequired(message) from exc
             except Exception as exc:
                 if debug:
                     self._capture_debug_artifacts(page, screenshot_path, html_path, meta_path)
-                logger.exception("Hyatt: failed to sync account.")
+                logger.exception("Marriott: failed to sync account.")
                 message = (
-                    "Hyatt sign-in could not be completed. Click Sync to reconnect."
+                    "Marriott sign-in could not be completed. Click Sync to reconnect."
                     if not interactive
                     else (
-                        "Hyatt sign-in failed. Complete the sign-in in the opened browser "
+                        "Marriott sign-in failed. Complete the sign-in in the opened browser "
                         "and try again."
                     )
                 )
@@ -144,7 +143,7 @@ class HyattConnector:
                     try:
                         context.tracing.stop(path=str(trace_path))
                     except Exception:
-                        logger.exception("Hyatt: failed to save Playwright trace.")
+                        logger.exception("Marriott: failed to save Playwright trace.")
                 context.close()
 
         assert summary is not None
@@ -156,16 +155,14 @@ class HyattConnector:
         page: Page,
         credentials: Credentials | None,
     ) -> AccountSummary:
-        logger.info("Hyatt: waiting for user to complete sign in")
+        logger.info("Marriott: waiting for user to complete sign in")
         deadline = time.monotonic() + self.interactive_timeout_seconds
         while time.monotonic() < deadline:
             if self._looks_authenticated(page):
-                page.wait_for_timeout(3000)
-                mark_session_connected(self.provider_key)
                 return self._load_account_summary(page, credentials, post_login=True)
             page.wait_for_timeout(1000)
         raise InteractiveLoginRequired(
-            "Hyatt sign-in timed out. Complete the sign-in in the opened browser and try again."
+            "Marriott sign-in timed out. Complete the sign-in in the opened browser and try again."
         )
 
     def _load_account_summary(
@@ -181,9 +178,9 @@ class HyattConnector:
                 return summary
 
         for account_url in self.account_urls:
-            logger.info("Hyatt: loading account page %s", account_url)
+            logger.info("Marriott: loading account page %s", account_url)
             page.goto(account_url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
 
             if self._page_requires_login(page):
                 continue
@@ -194,13 +191,12 @@ class HyattConnector:
 
         if post_login and self._looks_authenticated(page):
             logger.warning(
-                "Hyatt: session is active after sign-in but account summary could not be read "
-                "from the page; persisting browser profile for a later sync."
+                "Marriott: session is active after sign-in but account summary could not be "
+                "read from the page; persisting browser profile for a later sync."
             )
-            mark_session_connected(self.provider_key)
             return self._fallback_account_summary(credentials)
 
-        message = "Hyatt session expired. Click Sync to reconnect."
+        message = "Marriott session expired. Click Sync to reconnect."
         if not post_login:
             mark_session_reconnect_required(self.provider_key, message)
         raise InteractiveLoginRequired(message)
@@ -216,11 +212,11 @@ class HyattConnector:
 
     @staticmethod
     def _headless_enabled() -> bool:
-        return os.getenv("HYATT_HEADLESS", "true").lower() not in {"0", "false", "no"}
+        return os.getenv("MARRIOTT_HEADLESS", "true").lower() not in {"0", "false", "no"}
 
     @staticmethod
     def _debug_enabled() -> bool:
-        return os.getenv("HYATT_DEBUG", "").lower() in {"1", "true", "yes"}
+        return os.getenv("MARRIOTT_DEBUG", "").lower() in {"1", "true", "yes"}
 
     @staticmethod
     def _launch_browser_context(
@@ -236,12 +232,15 @@ class HyattConnector:
             "headless": headless,
             "no_viewport": True,
             **hardened_chromium_launch_options(),
-            "record_har_path": str(debug_dir / "hyatt_debug.har") if debug else None,
+            "record_har_path": str(debug_dir / "marriott_debug.har") if debug else None,
         }
 
-        executable_path = os.getenv("HYATT_BROWSER_PATH")
+        executable_path = os.getenv("MARRIOTT_BROWSER_PATH")
         if executable_path:
-            logger.info("Hyatt: launching browser from HYATT_BROWSER_PATH=%s", executable_path)
+            logger.info(
+                "Marriott: launching browser from MARRIOTT_BROWSER_PATH=%s",
+                executable_path,
+            )
             ctx = playwright.chromium.launch_persistent_context(
                 executable_path=executable_path,
                 **launch_options,
@@ -251,12 +250,12 @@ class HyattConnector:
 
         preferred_channels = [
             channel.strip()
-            for channel in os.getenv("HYATT_BROWSER_CHANNELS", "chrome,msedge").split(",")
+            for channel in os.getenv("MARRIOTT_BROWSER_CHANNELS", "chrome,msedge").split(",")
             if channel.strip()
         ]
         for channel in preferred_channels:
             try:
-                logger.info("Hyatt: launching persistent browser with channel=%s", channel)
+                logger.info("Marriott: launching persistent browser with channel=%s", channel)
                 ctx = playwright.chromium.launch_persistent_context(
                     channel=channel,
                     **launch_options,
@@ -264,9 +263,9 @@ class HyattConnector:
                 prepare_persistent_browser_context(ctx)
                 return ctx
             except Exception:
-                logger.exception("Hyatt: failed to launch browser channel %s", channel)
+                logger.exception("Marriott: failed to launch browser channel %s", channel)
 
-        logger.info("Hyatt: falling back to Playwright Chromium")
+        logger.info("Marriott: falling back to Playwright Chromium")
         ctx = playwright.chromium.launch_persistent_context(**launch_options)
         prepare_persistent_browser_context(ctx)
         return ctx
@@ -274,13 +273,13 @@ class HyattConnector:
     def _looks_authenticated(self, page: Page) -> bool:
         current_url = page.url.lower()
         return not self._page_requires_login(page) and any(
-            segment in current_url for segment in ("/loyalty", "/profile")
+            segment in current_url for segment in ("/myaccount/", "/loyalty/")
         )
 
     @staticmethod
     def _page_requires_login(page: Page) -> bool:
         current_url = page.url.lower()
-        if "/member/sign-in" in current_url or "/traditional" in current_url:
+        if "/sign-in.mi" in current_url or "/sign-in/" in current_url:
             return True
         try:
             password_field = page.locator("input[type='password']")
@@ -293,50 +292,36 @@ class HyattConnector:
         page: Page,
         credentials: Credentials | None,
     ) -> AccountSummary | None:
-        return self._extract_account_summary_from_text(self._page_text(page), credentials)
-
-    def _extract_account_summary_from_text(
-        self,
-        page_text: str,
-        credentials: Credentials | None,
-    ) -> AccountSummary | None:
-        points_match = re.search(
-            r'data-locator="points-balance"[^>]*>\s*([\d,]+)\s*<',
-            page_text,
-            re.I,
+        page_text = self._page_text(page)
+        points_text = self._read_text(
+            page,
+            (
+                ".points_wrapper .t-title-s",
+                ".points_wrapper span.t-title-s",
+                "[data-testid='pointsBalance']",
+            ),
         )
+
+        points_match = re.search(r"(\d[\d,]*)", points_text or "")
         if points_match is None:
-            points_match = re.search(r"Current Point Balance[^0-9]*([\d,]+)", page_text, re.I)
+            points_match = re.search(r"(?:points?\s*balance)[^0-9]*(\d[\d,]*)", page_text, re.I)
 
-        member_match = re.search(
-            r'data-locator="member-number"[^>]*>\s*([A-Z0-9]+)\s*<',
-            page_text,
-            re.I,
-        )
-        if member_match is None:
-            member_match = re.search(
-                r"(?:member(?:ship)?(?:\s*(?:number|#))?)\s*([A-Z0-9]{6,})",
-                page_text,
-                re.I,
-            )
-
-        tier_match = re.search(
-            r'data-locator="type"[^>]*>\s*([^<]+)\s*<',
-            page_text,
-            re.I,
-        )
-        if tier_match is None:
-            tier_match = re.search(r"\b(Globalist|Explorist|Discoverist|Member)\b", page_text, re.I)
-
-        if points_match is None and member_match is None and tier_match is None:
+        if points_match is None:
             return None
 
-        points_value = int(re.sub(r"[^0-9]", "", points_match.group(1)) or 0) if points_match else 0
-        member_value = (
-            self._normalize_member_id(member_match.group(1))
-            if member_match
-            else ""
+        tier_match = re.search(
+            r"\b(Ambassador|Titanium|Platinum|Gold|Silver|Member)\b",
+            page_text,
+            re.I,
         )
+        member_match = re.search(
+            r"(?:member(?:ship)?(?:\s*(?:number|#))?)\s*([A-Z0-9]{6,})",
+            page_text,
+            re.I,
+        )
+
+        points_value = int(re.sub(r"[^0-9]", "", points_match.group(1)) or 0)
+        member_value = self._normalize_member_id(member_match.group(1)) if member_match else ""
         if not member_value and credentials is not None:
             member_value = credentials.member_id
 
@@ -344,7 +329,7 @@ class HyattConnector:
             provider=self.provider_name,
             member_id=member_value or "",
             points=points_value,
-            tier=tier_match.group(1) if tier_match else "Member",
+            tier=tier_match.group(1).title() if tier_match else "Member",
             last_updated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         )
 
@@ -357,8 +342,6 @@ class HyattConnector:
 
     @staticmethod
     def _read_text(page: Page, selectors: tuple[str, ...]) -> str:
-        if page is None:
-            return ""
         for selector in selectors:
             try:
                 locator = page.locator(selector)
@@ -387,87 +370,51 @@ class HyattConnector:
                     continue
             return False
 
-        user_field_selectors = [
-            'input[name="userId"]',
-            'input[name="input-text-Email or Member Number"]',
+        # Bonvoy sign-in uses the same m-ui-library fields as other Marriott/Hyatt UIs:
+        # email/member: data-testid email-text-field, name input-text-Email or Member Number
+        # password: data-testid sign-in-pwrd, name input-text-Password
+        user_selectors = [
             '[data-testid="email-text-field"] input',
-            'label[data-js="userId"] input',
-            'label[data-js="email"] input',
-            'label.b-form-input[data-js="email"] input',
-            'input[type="email"][name="email"]',
-            'input[name="email"]',
+            'input[name="input-text-Email or Member Number"]',
+            "input[name='userId']",
+            "input[name='username']",
+            "input[name='email']",
+            "input[id='username']",
         ]
         user_loc = wait_first_visible_locator(
-            page, user_field_selectors, timeout_per_selector_ms=12000
+            page, user_selectors[:2], timeout_per_selector_ms=12000
         )
-        filled_member = False
+        filled_user = False
         if user_loc is not None and credentials.member_id:
             try:
                 click_and_fill_field(user_loc, credentials.member_id)
-                filled_member = True
+                filled_user = True
             except Exception:
-                logger.exception("Hyatt: user/email field fill failed; trying fallbacks")
-        if not filled_member:
-            filled_member = fill_with_selectors(
-                [
-                    "input[name='memberId']",
-                    "input[name='memberNumber']",
-                    "input[name='member_id']",
-                    *user_field_selectors,
-                ],
-                credentials.member_id,
-            )
-        if not filled_member:
+                logger.exception("Marriott: primary user field fill failed; trying fallbacks")
+        if not filled_user:
+            filled_user = fill_with_selectors(user_selectors, credentials.member_id)
+        if not filled_user:
             try:
-                email_label = re.compile(r"(email(?:\s+or\s+member\s+number)?|member|user)", re.I)
-                page.get_by_label(email_label).fill(credentials.member_id)
-            except Exception:
-                logger.info("Hyatt: member id / email field not found for prefill")
-
-        filled_last = fill_with_selectors(
-            [
-                'input[name="lastName"]',
-                'input[name="input-text-Last Name"]',
-                'input[name="last_name"]',
-                'input[name="surname"]',
-                'label[data-js="lastName"] input',
-            ],
-            credentials.last_name,
-        )
-        if not filled_last and credentials.last_name:
-            last_name_loc = wait_first_visible_locator(
-                page,
-                [
-                    'input[name="lastName"]',
-                    'input[name="input-text-Last Name"]',
-                    'label[data-js="lastName"] input',
-                    '[data-testid="lastName"] input',
-                ],
-                timeout_per_selector_ms=12000,
-            )
-            if last_name_loc is not None:
-                try:
-                    click_and_fill_field(last_name_loc, credentials.last_name)
-                    filled_last = True
-                except Exception:
-                    logger.exception("Hyatt: last name field fill failed; trying label fallback")
-        if not filled_last and credentials.last_name:
-            try:
-                page.get_by_label(re.compile(r"last name|surname", re.I)).fill(
-                    credentials.last_name
+                page.get_by_label(re.compile("email or member number", re.I)).fill(
+                    credentials.member_id
                 )
             except Exception:
-                logger.info("Hyatt: last name field not found for prefill")
+                try:
+                    page.get_by_label(re.compile("member|email|username", re.I)).fill(
+                        credentials.member_id
+                    )
+                except Exception:
+                    logger.info("Marriott: user field not found for prefill")
 
-        modern_pw_selectors = [
-            'input[name="password"]',
-            'input[name="input-text-Password"]',
+        pw_selectors = [
             '[data-testid="sign-in-pwrd"] input',
-            'label[data-js="password"] input',
-            'input[type="password"]',
+            'input[name="input-text-Password"]',
+            "input[type='password']",
+            "input[name='password']",
+            "input[id='password']",
         ]
         pw_loc = wait_first_visible_locator(
-            page, modern_pw_selectors, timeout_per_selector_ms=12000
+            page, pw_selectors[:2], timeout_per_selector_ms=12000
         )
         filled_password = False
         if pw_loc is not None and credentials.password:
@@ -475,26 +422,16 @@ class HyattConnector:
                 click_and_fill_field(pw_loc, credentials.password)
                 filled_password = True
             except Exception:
-                logger.exception("Hyatt: modern password field fill failed; trying fallbacks")
+                logger.exception("Marriott: primary password field fill failed; trying fallbacks")
         if not filled_password:
-            filled_password = fill_with_selectors(
-                [
-                    *modern_pw_selectors,
-                ],
-                credentials.password,
-            )
+            filled_password = fill_with_selectors(pw_selectors, credentials.password)
         if not filled_password:
             try:
-                page.get_by_label(re.compile("password", re.I)).fill(credentials.password)
+                page.get_by_label(re.compile("sign in password|password", re.I)).fill(
+                    credentials.password
+                )
             except Exception:
-                logger.info("Hyatt: password field not found for prefill")
-
-    def _persist_session_state(self, context) -> None:
-        try:
-            session_state = context.storage_state()
-            save_session_state(self.provider_key, session_state)
-        except Exception:
-            logger.exception("Hyatt: failed to save session state.")
+                logger.info("Marriott: password field not found for prefill")
 
     @staticmethod
     def _capture_debug_artifacts(
@@ -508,8 +445,9 @@ class HyattConnector:
             page.screenshot(path=str(screenshot_path), full_page=True)
             html_path.write_text(page.content(), encoding="utf-8")
             meta_path.write_text(
-                f"url={page.url}\ntitle={page.title()}\n",
+                f"url={page.url}\n"
+                f"title={page.title()}\n",
                 encoding="utf-8",
             )
         except Exception:
-            logger.exception("Hyatt: failed to capture debug screenshot.")
+            logger.exception("Marriott: failed to capture debug screenshot.")

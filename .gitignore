@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 .uv-cache/
 backend/data/credentials.json
+backend/data/sessions/
 
 # Node
 node_modules/
@@ -18,3 +19,6 @@ dist/
 
 # OS
 .DS_Store
+
+# Data
+backend/data/

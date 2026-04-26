@@ -1,7 +1,9 @@
 from app.providers.hotels.hyatt import HyattConnector
+from app.providers.hotels.marriott import MarriottConnector
 
 CONNECTORS = {
-    HyattConnector.provider_key: HyattConnector()
+    HyattConnector.provider_key: HyattConnector(),
+    MarriottConnector.provider_key: MarriottConnector(),
 }
 
 
