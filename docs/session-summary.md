@@ -25,6 +25,7 @@ TravelWallet is a responsive web app that aggregates travel reservations, loyalt
   - If the opened Hyatt browser is already logged in, the connector now skips login filling and extracts the account overview points directly.
   - The Hyatt card now labels states explicitly as checking saved session, session synced, saved session available, or no saved session.
   - Provider prompts now follow the selected hotel provider (Hyatt or Marriott) with Marriott last name optional.
+- Hotels tab UI now only keeps the add-hotel form and a synced hotel loyalty cards section that renders one card per saved hotel provider account.
 
 ## Ticket Status
 - T1 Auth and protected routes: in progress (UI done; route guards + backend auth pending).
