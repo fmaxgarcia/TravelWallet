@@ -5,6 +5,27 @@ import { apiBaseUrl } from "./lib/config";
 import { supabase } from "./lib/supabase";
 import "./App.css";
 
+const HOTEL_PROVIDERS = [
+  { key: "hyatt", name: "World of Hyatt", shortName: "Hyatt" },
+  { key: "marriott", name: "Marriott Bonvoy", shortName: "Marriott" }
+];
+
+const EMPTY_PROVIDER_SLICE = {
+  account: null,
+  status: "",
+  error: "",
+  prompt: "",
+  loading: false,
+  hasCredentials: false,
+  hasSession: false
+};
+
+function createInitialProviderStates() {
+  return Object.fromEntries(
+    HOTEL_PROVIDERS.map((p) => [p.key, { ...EMPTY_PROVIDER_SLICE }])
+  );
+}
+
 function App() {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -17,26 +38,32 @@ function App() {
   const [hyattUsername, setHyattUsername] = useState("");
   const [hyattLastName, setHyattLastName] = useState("");
   const [hyattPassword, setHyattPassword] = useState("");
-  const [hyattAccount, setHyattAccount] = useState(null);
-  const [hyattStatus, setHyattStatus] = useState("");
-  const [hyattError, setHyattError] = useState("");
-  const [hyattPrompt, setHyattPrompt] = useState("");
-  const [hyattLoading, setHyattLoading] = useState(false);
-  const [hyattHasCredentials, setHyattHasCredentials] = useState(false);
-  const [hyattHasSession, setHyattHasSession] = useState(false);
+  const [providerStates, setProviderStates] = useState(createInitialProviderStates);
   const [activeHotelProvider, setActiveHotelProvider] = useState("hyatt");
-  const hyattSyncInFlight = useRef(false);
+  const [credentialsSaveLoading, setCredentialsSaveLoading] = useState(false);
+  const providerSyncLocks = useRef({});
+  const activeSyncProviderRef = useRef(null);
   const hyattAutoSyncAttemptedRef = useRef("");
   const [savedHotelProviders, setSavedHotelProviders] = useState([]);
   const supabaseReady = Boolean(supabase);
   const { user, stats, trips, loyaltyAccounts, passes, actions } = homeData;
-  const hotelProviders = [
-    { key: "hyatt", name: "World of Hyatt", shortName: "Hyatt" },
-    { key: "marriott", name: "Marriott Bonvoy", shortName: "Marriott" }
-  ];
+  const hotelProviders = HOTEL_PROVIDERS;
   const activeProviderMeta =
     hotelProviders.find((provider) => provider.key === activeHotelProvider) ?? hotelProviders[0];
   const activeProviderShortName = activeProviderMeta.shortName;
+  const activeFormState = providerStates[activeHotelProvider] ?? EMPTY_PROVIDER_SLICE;
+
+  const anySyncInFlight = Object.values(providerStates).some((p) => p?.loading);
+
+  const updateProviderState = (providerKey, partial) => {
+    setProviderStates((prev) => ({
+      ...prev,
+      [providerKey]: { ...(prev[providerKey] ?? { ...EMPTY_PROVIDER_SLICE }), ...partial }
+    }));
+  };
+
+  const getProviderShortName = (providerKey) =>
+    hotelProviders.find((p) => p.key === providerKey)?.shortName ?? providerKey;
 
   useEffect(() => {
     if (!supabase) {
@@ -62,12 +89,7 @@ function App() {
 
   useEffect(() => {
     if (!session) {
-      setHyattAccount(null);
-      setHyattStatus("");
-      setHyattError("");
-      setHyattPrompt("");
-      setHyattHasCredentials(false);
-      setHyattHasSession(false);
+      setProviderStates(createInitialProviderStates());
       setSavedHotelProviders([]);
       hyattAutoSyncAttemptedRef.current = "";
       return;
@@ -86,27 +108,30 @@ function App() {
 
     let cancelled = false;
 
-    const initializeHyatt = async () => {
+    const initializeActiveProvider = async () => {
       try {
-        const status = await fetchProviderStatus();
+        const status = await fetchProviderStatus(activeHotelProvider);
         if (cancelled) {
           return;
         }
-        applyHyattStatus(status);
+        applyProviderStatus(activeHotelProvider, status);
         if (status.has_session) {
-          await syncHyatt({ startup: true });
+          await syncProvider(activeHotelProvider, { startup: true });
         }
       } catch (_loadError) {
         if (!cancelled) {
-          setHyattAccount(null);
-          setHyattHasSession(false);
-          setHyattError(`Unable to load ${activeProviderShortName} sync status.`);
-          setHyattPrompt(`Click Sync now to open ${activeProviderShortName} sign-in.`);
+          const shortName = getProviderShortName(activeHotelProvider);
+          updateProviderState(activeHotelProvider, {
+            account: null,
+            hasSession: false,
+            error: `Unable to load ${shortName} sync status.`,
+            prompt: `Click Sync now to open ${shortName} sign-in.`
+          });
         }
       }
     };
 
-    void initializeHyatt();
+    void initializeActiveProvider();
 
     return () => {
       cancelled = true;
@@ -145,6 +170,34 @@ function App() {
     };
   }, [session, activeTab]);
 
+  useEffect(() => {
+    if (!session || activeTab !== "hotels" || savedHotelProviders.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const hydrateSavedProviders = async () => {
+      for (const providerKey of savedHotelProviders) {
+        try {
+          const status = await fetchProviderStatus(providerKey);
+          if (cancelled) {
+            return;
+          }
+          applyProviderStatus(providerKey, status);
+        } catch (_error) {
+          // Ignore per-provider status failures when hydrating cards.
+        }
+      }
+    };
+
+    void hydrateSavedProviders();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session, activeTab, savedHotelProviders]);
+
   const resetAlerts = () => {
     setError("");
     setMessage("");
@@ -162,28 +215,24 @@ function App() {
     return fallbackMessage;
   };
 
-  const applyHyattStatus = (status) => {
-    setHyattHasCredentials(status.has_credentials);
-    setHyattHasSession(status.has_session);
-
-    if (status.has_session) {
-      setHyattPrompt("");
-      return;
+  const applyProviderStatus = (providerKey, status) => {
+    const shortName = getProviderShortName(providerKey);
+    let prompt = "";
+    if (!status.has_session) {
+      if (status.has_credentials) {
+        prompt = `Click Sync now to open ${shortName} sign-in with your saved details prefilled.`;
+      } else {
+        prompt = `Click Sync now to open ${shortName} sign-in, or save your ${shortName} details first for prefill.`;
+      }
     }
-
-    if (status.has_credentials) {
-      setHyattPrompt(
-        `Click Sync now to open ${activeProviderShortName} sign-in with your saved details prefilled.`
-      );
-      return;
-    }
-
-    setHyattPrompt(
-      `Click Sync now to open ${activeProviderShortName} sign-in, or save your ${activeProviderShortName} details first for prefill.`
-    );
+    updateProviderState(providerKey, {
+      hasCredentials: status.has_credentials,
+      hasSession: status.has_session,
+      prompt
+    });
   };
 
-  const fetchProviderStatus = async (providerKey = activeHotelProvider) => {
+  const fetchProviderStatus = async (providerKey) => {
     const response = await fetch(`${apiBaseUrl}/providers/${providerKey}/status`);
     if (!response.ok) {
       const providerMeta =
@@ -193,153 +242,170 @@ function App() {
     return response.json();
   };
 
-  const syncHyatt = async ({ startup = false } = {}) => {
-    if (hyattSyncInFlight.current) {
+  const beginProviderSync = (providerKey) => {
+    if (activeSyncProviderRef.current !== null && activeSyncProviderRef.current !== providerKey) {
       return false;
     }
-    hyattSyncInFlight.current = true;
-    setHyattError("");
-    setHyattPrompt("");
-    if (!startup) {
-      setHyattStatus("");
+    if (providerSyncLocks.current[providerKey]) {
+      return false;
     }
-    setHyattLoading(true);
+    providerSyncLocks.current[providerKey] = true;
+    activeSyncProviderRef.current = providerKey;
+    return true;
+  };
+
+  const endProviderSync = (providerKey) => {
+    providerSyncLocks.current[providerKey] = false;
+    if (activeSyncProviderRef.current === providerKey) {
+      activeSyncProviderRef.current = null;
+    }
+  };
+
+  const syncProvider = async (providerKey, { startup = false } = {}) => {
+    if (!beginProviderSync(providerKey)) {
+      return false;
+    }
+
+    const shortName = getProviderShortName(providerKey);
+    updateProviderState(providerKey, {
+      error: "",
+      prompt: "",
+      ...(!startup ? { status: "" } : {}),
+      loading: true
+    });
 
     try {
-      const response = await fetch(
-        `${apiBaseUrl}/providers/${activeHotelProvider}/sync`,
-        {
-          method: "POST"
-        }
-      );
+      const response = await fetch(`${apiBaseUrl}/providers/${providerKey}/sync`, {
+        method: "POST"
+      });
       if (response.status === 409) {
-        setHyattAccount(null);
-        setHyattHasSession(false);
-        setHyattPrompt(`Click Sync now to open ${activeProviderShortName} sign-in.`);
-        setHyattError(
-          await readResponseMessage(response, `${activeProviderShortName} needs you to sign in again.`)
-        );
+        updateProviderState(providerKey, {
+          account: null,
+          hasSession: false,
+          prompt: `Click Sync now to open ${shortName} sign-in.`,
+          error: await readResponseMessage(response, `${shortName} needs you to sign in again.`)
+        });
         return false;
       }
       if (response.status === 404) {
-        setHyattAccount(null);
-        setHyattHasCredentials(false);
-        setHyattHasSession(false);
-        setHyattPrompt(
-          `Click Sync now to open ${activeProviderShortName} sign-in, or save your ${activeProviderShortName} details first for prefill.`
-        );
-        setHyattError(`No ${activeProviderShortName} connection is saved yet.`);
+        updateProviderState(providerKey, {
+          account: null,
+          hasCredentials: false,
+          hasSession: false,
+          prompt: `Click Sync now to open ${shortName} sign-in, or save your ${shortName} details first for prefill.`,
+          error: `No ${shortName} connection is saved yet.`
+        });
         return false;
       }
       if (!response.ok) {
         throw new Error(
-          await readResponseMessage(response, `Unable to sync ${activeProviderShortName} account yet.`)
+          await readResponseMessage(response, `Unable to sync ${shortName} account yet.`)
         );
       }
       const data = await response.json();
-      setHyattAccount(data.account);
-      setHyattStatus(`Last synced ${data.account.last_updated}`);
-      setHyattPrompt("");
-      setHyattHasCredentials(true);
-      setHyattHasSession(true);
+      updateProviderState(providerKey, {
+        account: data.account,
+        status: `Last synced ${data.account.last_updated}`,
+        prompt: "",
+        hasCredentials: true,
+        hasSession: true
+      });
       return true;
     } catch (syncError) {
-      setHyattAccount(null);
-      setHyattHasSession(false);
-      setHyattError(
-        startup
-          ? `Saved ${activeProviderShortName} session could not be used. Click Sync now to reconnect.`
-          : syncError.message
-      );
-      setHyattPrompt(`Click Sync now to open ${activeProviderShortName} sign-in.`);
+      updateProviderState(providerKey, {
+        account: null,
+        hasSession: false,
+        error: startup
+          ? `Saved ${shortName} session could not be used. Click Sync now to reconnect.`
+          : syncError.message,
+        prompt: `Click Sync now to open ${shortName} sign-in.`
+      });
       return false;
     } finally {
-      setHyattLoading(false);
-      hyattSyncInFlight.current = false;
+      updateProviderState(providerKey, { loading: false });
+      endProviderSync(providerKey);
     }
   };
 
-  const connectHyatt = async () => {
-    if (hyattSyncInFlight.current) {
+  const connectProvider = async (providerKey) => {
+    if (!beginProviderSync(providerKey)) {
       return;
     }
-    hyattSyncInFlight.current = true;
-    setHyattLoading(true);
-    setHyattError("");
-    setHyattStatus(`Browser opened. Finish ${activeProviderShortName} sign-in there.`);
-    setHyattPrompt("Your saved details will be prefilled when available.");
+
+    const shortName = getProviderShortName(providerKey);
+    updateProviderState(providerKey, {
+      loading: true,
+      error: "",
+      status: `Browser opened. Finish ${shortName} sign-in there.`,
+      prompt: "Your saved details will be prefilled when available."
+    });
 
     try {
-      const response = await fetch(
-        `${apiBaseUrl}/providers/${activeHotelProvider}/connect`,
-        {
-          method: "POST"
-        }
-      );
+      const response = await fetch(`${apiBaseUrl}/providers/${providerKey}/connect`, {
+        method: "POST"
+      });
       if (response.status === 409) {
         throw new Error(
-          await readResponseMessage(response, `${activeProviderShortName} sign-in was not completed.`)
+          await readResponseMessage(response, `${shortName} sign-in was not completed.`)
         );
       }
       if (!response.ok) {
-        throw new Error(
-          await readResponseMessage(response, `Unable to open ${activeProviderShortName} sign-in.`)
-        );
+        throw new Error(await readResponseMessage(response, `Unable to open ${shortName} sign-in.`));
       }
       const data = await response.json();
-      setHyattAccount(data.account);
-      setHyattHasSession(true);
-      setHyattStatus(`Last synced ${data.account.last_updated}`);
-      setHyattPrompt("");
+      updateProviderState(providerKey, {
+        account: data.account,
+        hasSession: true,
+        status: `Last synced ${data.account.last_updated}`,
+        prompt: ""
+      });
     } catch (connectError) {
-      setHyattAccount(null);
-      setHyattHasSession(false);
-      setHyattError(connectError.message);
-      setHyattPrompt(`Click Sync now to open ${activeProviderShortName} sign-in again.`);
+      updateProviderState(providerKey, {
+        account: null,
+        hasSession: false,
+        error: connectError.message,
+        prompt: `Click Sync now to open ${shortName} sign-in again.`
+      });
     } finally {
-      setHyattLoading(false);
-      hyattSyncInFlight.current = false;
+      updateProviderState(providerKey, { loading: false });
+      endProviderSync(providerKey);
     }
   };
 
-  const saveHyattCredentials = async (event) => {
+  const saveProviderCredentials = async (event) => {
     event.preventDefault();
-    setHyattError("");
-    setHyattStatus("");
-    setHyattLoading(true);
+    updateProviderState(activeHotelProvider, { error: "", status: "" });
+    setCredentialsSaveLoading(true);
 
     try {
-      const response = await fetch(
-        `${apiBaseUrl}/providers/${activeHotelProvider}/credentials`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            member_id: hyattUsername,
-            last_name: hyattLastName,
-            password: hyattPassword
-          })
-        }
-      );
+      const response = await fetch(`${apiBaseUrl}/providers/${activeHotelProvider}/credentials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          member_id: hyattUsername,
+          last_name: hyattLastName,
+          password: hyattPassword
+        })
+      });
       if (!response.ok) {
         throw new Error(`Unable to save ${activeProviderShortName} credentials.`);
       }
       setHyattPassword("");
       setHyattLastName("");
-      setHyattAccount(null);
-      setHyattHasCredentials(true);
-      setHyattHasSession(false);
-      setHyattStatus(`${activeProviderShortName} details saved.`);
+      updateProviderState(activeHotelProvider, {
+        account: null,
+        hasCredentials: true,
+        hasSession: false,
+        status: `${activeProviderShortName} details saved.`,
+        prompt: `Click Sync now to open ${activeProviderShortName} sign-in with your saved details prefilled.`
+      });
       setSavedHotelProviders((current) =>
         current.includes(activeHotelProvider) ? current : [...current, activeHotelProvider]
       );
-      setHyattPrompt(
-        `Click Sync now to open ${activeProviderShortName} sign-in with your saved details prefilled.`
-      );
     } catch (saveError) {
-      setHyattError(saveError.message);
+      updateProviderState(activeHotelProvider, { error: saveError.message });
     } finally {
-      setHyattLoading(false);
+      setCredentialsSaveLoading(false);
     }
   };
 
@@ -413,41 +479,7 @@ function App() {
       tripStatus: trip.status
     }))
   );
-  const hyattSyncState = hyattLoading
-    ? "syncing"
-    : hyattError
-      ? "failed"
-      : hyattAccount
-        ? "success"
-        : "idle";
-  const hyattStatusLabel =
-    hyattSyncState === "syncing"
-      ? "Checking saved session"
-      : hyattSyncState === "success"
-        ? hyattStatus || `Last synced ${hyattAccount?.last_updated ?? ""}`.trim()
-        : hyattHasSession
-          ? "Saved session available"
-          : "Needs sign-in";
-  const hyattCardMessage = hyattLoading
-    ? `Trying the saved ${activeProviderShortName} session before opening a browser.`
-    : hyattError
-      ? `${hyattError} ${hyattPrompt}`.trim()
-      : hyattAccount
-        ? `Synced from the saved ${activeProviderShortName} session.`
-        : hyattHasSession
-          ? `A saved ${activeProviderShortName} session exists. The app will try that first on this tab.`
-          : `No saved ${activeProviderShortName} session exists yet. Click the button to open sign-in.`;
-  const hyattSyncButtonLabel = hyattLoading
-    ? "Syncing..."
-    : hyattHasSession
-      ? "Sync now"
-      : hyattHasCredentials
-        ? `Open prefilled ${activeProviderShortName} sign-in`
-        : `Open ${activeProviderShortName} sign-in`;
-  const showHyattCardAction = !hyattLoading;
-  const handleHyattCardAction = hyattHasSession
-    ? () => void syncHyatt()
-    : () => void connectHyatt();
+
   const renderLoyaltySection = (title, accounts) => (
     <section className="section">
       <div className="panel card">
@@ -478,37 +510,56 @@ function App() {
       account.provider.toLowerCase().includes(name)
     )
   );
-  const hotelLoyaltyAccounts = loyaltyAccounts.filter((account) =>
-    ["marriott", "sheraton", "hyatt"].some((name) =>
-      account.provider.toLowerCase().includes(name)
-    )
-  );
+
   const syncedHotelCards = savedHotelProviders.map((providerKey) => {
     const providerMeta = hotelProviders.find((provider) => provider.key === providerKey);
     if (!providerMeta) {
       return null;
     }
-    const providerShortName = providerMeta.shortName.toLowerCase();
-    const providerIsActive = providerKey === activeHotelProvider;
-    const accountFromSeed = hotelLoyaltyAccounts.find((account) =>
-      account.provider.toLowerCase().includes(providerShortName)
-    );
-    const account = providerIsActive && hyattAccount ? hyattAccount : accountFromSeed;
+    const slice = providerStates[providerKey] ?? EMPTY_PROVIDER_SLICE;
+    const shortName = providerMeta.shortName;
+    const cardState = slice.loading ? "syncing" : slice.error ? "failed" : slice.account ? "success" : "idle";
+    const statusLabel =
+      cardState === "syncing"
+        ? "Checking saved session"
+        : cardState === "success"
+          ? slice.status || `Last synced ${slice.account?.last_updated ?? ""}`.trim()
+          : slice.hasSession
+            ? "Saved session available"
+            : "Needs sign-in";
+    const cardMessage = slice.loading
+      ? `Trying the saved ${shortName} session before opening a browser.`
+      : slice.error
+        ? `${slice.error} ${slice.prompt}`.trim()
+        : slice.account
+          ? `Synced from the saved ${shortName} session.`
+          : slice.hasSession
+            ? `A saved ${shortName} session exists. The app will try that first on this tab.`
+            : `No saved ${shortName} session exists yet. Click the button to open sign-in.`;
+    const buttonLabel = slice.loading
+      ? "Syncing..."
+      : slice.hasSession
+        ? "Sync now"
+        : slice.hasCredentials
+          ? `Open prefilled ${shortName} sign-in`
+          : `Open ${shortName} sign-in`;
+    const onClick = slice.hasSession
+      ? () => void syncProvider(providerKey)
+      : () => void connectProvider(providerKey);
+    const account = slice.account;
     return {
       key: providerKey,
       name: providerMeta.name,
-      isActive: providerIsActive,
-      cardState: providerIsActive ? hyattSyncState : account ? "success" : "idle",
-      message: providerIsActive
-        ? hyattCardMessage
-        : "Saved account. Select this provider above and click Sync to refresh.",
-      statusLabel: providerIsActive
-        ? hyattStatusLabel
-        : account?.last_updated ?? account?.lastUpdated ?? "Not synced yet",
+      cardState,
+      message: cardMessage,
+      statusLabel,
       memberId: account?.member_id ?? account?.memberId ?? "Unavailable",
       tier: account?.tier ?? "Member",
       points: account?.points ?? 0,
-      lastUpdated: account?.last_updated ?? account?.lastUpdated ?? "Not synced yet"
+      lastUpdated: account?.last_updated ?? account?.lastUpdated ?? "Not synced yet",
+      loading: slice.loading,
+      buttonLabel,
+      onClick
     };
   });
 
@@ -756,7 +807,7 @@ function App() {
                           ))}
                         </select>
                       </label>
-                      <form className="provider-form" onSubmit={saveHyattCredentials}>
+                      <form className="provider-form" onSubmit={saveProviderCredentials}>
                         <label>
                           Member ID
                           <input
@@ -791,12 +842,20 @@ function App() {
                           />
                         </label>
                         <div className="form-row">
-                          <button className="primary" disabled={hyattLoading} type="submit">
-                            {hyattLoading ? "Saving..." : "Save details"}
+                          <button
+                            className="primary"
+                            disabled={credentialsSaveLoading || anySyncInFlight}
+                            type="submit"
+                          >
+                            {credentialsSaveLoading ? "Saving..." : "Save details"}
                           </button>
                         </div>
-                        {hyattError ? <div className="notice error">{hyattError}</div> : null}
-                        {hyattStatus ? <div className="notice success">{hyattStatus}</div> : null}
+                        {activeFormState.error ? (
+                          <div className="notice error">{activeFormState.error}</div>
+                        ) : null}
+                        {activeFormState.status ? (
+                          <div className="notice success">{activeFormState.status}</div>
+                        ) : null}
                       </form>
                     </div>
                   </section>
@@ -815,7 +874,7 @@ function App() {
                                 <p className="muted">{card.message}</p>
                               </div>
                               <div className="sync-indicator">
-                                {card.isActive && hyattSyncState === "syncing" ? (
+                                {card.cardState === "syncing" ? (
                                   <span className="spinner" aria-hidden="true" />
                                 ) : null}
                                 <span>{card.statusLabel}</span>
@@ -831,17 +890,16 @@ function App() {
                                 <span className="muted">{card.lastUpdated}</span>
                               </div>
                             </div>
-                            {card.isActive && showHyattCardAction ? (
-                              <div className="sync-actions">
-                                <button
-                                  className="secondary sync-trigger"
-                                  type="button"
-                                  onClick={handleHyattCardAction}
-                                >
-                                  {hyattSyncButtonLabel}
-                                </button>
-                              </div>
-                            ) : null}
+                            <div className="sync-actions">
+                              <button
+                                className="secondary sync-trigger"
+                                disabled={card.loading || (anySyncInFlight && !card.loading)}
+                                type="button"
+                                onClick={card.onClick}
+                              >
+                                {card.buttonLabel}
+                              </button>
+                            </div>
                           </div>
                         ) : null
                       )}
@@ -941,7 +999,6 @@ function App() {
             </form>
           )}
         </section>
-
       </main>
     </div>
   );
