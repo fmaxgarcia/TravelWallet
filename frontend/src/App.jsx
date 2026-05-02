@@ -115,9 +115,6 @@ function App() {
           return;
         }
         applyProviderStatus(activeHotelProvider, status);
-        if (status.has_session) {
-          await syncProvider(activeHotelProvider, { startup: true });
-        }
       } catch (_loadError) {
         if (!cancelled) {
           const shortName = getProviderShortName(activeHotelProvider);
@@ -261,7 +258,7 @@ function App() {
     }
   };
 
-  const syncProvider = async (providerKey, { startup = false } = {}) => {
+  const syncProvider = async (providerKey) => {
     if (!beginProviderSync(providerKey)) {
       return false;
     }
@@ -270,7 +267,7 @@ function App() {
     updateProviderState(providerKey, {
       error: "",
       prompt: "",
-      ...(!startup ? { status: "" } : {}),
+      status: "",
       loading: true
     });
 
@@ -315,9 +312,7 @@ function App() {
       updateProviderState(providerKey, {
         account: null,
         hasSession: false,
-        error: startup
-          ? `Saved ${shortName} session could not be used. Click Sync now to reconnect.`
-          : syncError.message,
+        error: syncError.message,
         prompt: `Click Sync now to open ${shortName} sign-in.`
       });
       return false;
